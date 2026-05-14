@@ -1,60 +1,164 @@
-from flask import Flask, render_template, request, Response, redirect, url_for
+from flask import Flask, render_template, request, redirect, url_for, session, Response
 import sqlalchemy
-from sqlalchemy import text
-from sqlalchemy.engine import URL
-import os
+from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy import Column, Integer, String, Text, ForeignKey
 
-app = Flask(import_name=__name__, template_folder=os.getcwd())
+app = Flask(__name__)
+app.secret_key = "secret_kistet_kistum"
+
 conn_string = "postgresql+psycopg2://postgres:122345@127.0.0.1:5432/postgres"
 engine = sqlalchemy.create_engine(conn_string)
 
-ADMIN_LOGIN = "admin"
-ADMIN_PASSWORD = "password123"
 
-def check_auth(username, password):
-    return username == ADMIN_LOGIN and password == ADMIN_PASSWORD
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
-def authenticate():
-    return Response(
-        "Необходима авторизация",
-        401,
-        {"WWW-Authenticate": 'Basic realm="Admin Panel"'},
-    )
+Base = declarative_base()
 
-@app.route("/admin")
-def admin_panel():
-    auth = request.authorization
-    if not auth or not check_auth(auth.username, auth.password):
-        return authenticate()
+class User(Base):
+    __tablename__ = "users"
 
+    id = Column(Integer, primary_key=True)
+    username = Column(String(100), unique=True, nullable=False)
+    password = Column(String(200), nullable=False)
+    role = Column(String(20), nullable=False, default="user")  
+
+class Course(Base):
+    __tablename__ = "courses"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(200), nullable=False)
+
+class Application(Base):
+    __tablename__ = "applications"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    course_id = Column(Integer, ForeignKey("courses.id"), nullable=False)
+    payment_form = Column(String(100), nullable=True)
+    status = Column(String(100), nullable=False, default="new")
+    comment = Column(Text, nullable=True)
+
+Base.metadata.create_all(engine)
+
+def get_db():
+    return SessionLocal()
+
+def ensure_admin():
+    db = get_db()
     try:
-        with engine.connect() as conn:
-            query = text("SELECT id, user_id, course_name, status FROM zadacha ORDER BY id")
-            result = conn.execute(query)
-            applications = [dict(row._mapping) for row in result]
-            
-        return render_template("admin.html", applications=applications)
-    except Exception as e:
-        return f"Ошибка базы данных: {e}"
-    
-@app.route("/update_status", methods=["POST"])
-def update_status():
-    auth = request.authorization
-    if not auth or not check_auth(auth.username, auth.password):
-        return authenticate()
+        admin = db.query(User).filter_by(username="Admin").first()
+        if not admin:
+            admin = User(username="admin", password="password123", role="admin")
+            db.add(admin)
+            db.commit()
+    finally:
+        db.close()
 
-    app_id = request.form.get("app_id")
-    new_status = request.form.get("status")
+ensure_admin()
 
+def is_admin():
+    return session.get("role") == "admin"
+
+@app.route("/")
+def index():
+    return "Главная страница"
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        username = request.form.get("username")
+        password = request.form.get("password")
+
+        db = get_db()
+        try:
+            user = db.query(User).filter_by(username=username, password=password).first()
+            if user:
+                session["user_id"] = user.id
+                session["username"] = user.username
+                session["role"] = user.role
+                if user.role == "admin":
+                    return redirect(url_for("admin_applications"))
+                return redirect(url_for("user_page"))
+            return "Неверный логин или пароль", 401
+        finally:
+            db.close()
+
+    return render_template("login.html")
+
+@app.route("/user")
+def user_page():
+    if not session.get("user_id"):
+        return redirect(url_for("login"))
+    return f"Страница пользователя: {session.get('username')}"
+
+@app.route("/admin/applications")
+def admin_applications():
+    if not is_admin():
+        return redirect(url_for("user_page"))
+
+    db = get_db()
     try:
-        with engine.begin() as conn:
-            conn.execute(
-                text("UPDATE zadacha SET status = :status WHERE id = :id"),
-                {"status": new_status, "id": app_id}
-            )
-        return redirect(url_for("admin"))
-    except Exception as e:
-        return f"Ошибка при обновлении: {e}"
+        apps = (
+            db.query(Application, User, Course)
+            .join(User, Application.user_id == User.id)
+            .join(Course, Application.course_id == Course.id)
+            .all()
+        )
+        return render_template("admin_applications.html", applications=apps)
+    finally:
+        db.close()
+
+@app.route("/admin/applications/<int:app_id>/update", methods=["POST"])
+def admin_update_application(app_id):
+    if not is_admin():
+        return redirect(url_for("user_page"))
+
+    payment_form = request.form.get("payment_form")
+    status = request.form.get("status")
+
+    db = get_db()
+    try:
+        application = db.query(Application).filter_by(id=app_id).first()
+        if not application:
+            return "Заявка не найдена", 404
+
+        application.payment_form = payment_form
+        application.status = status
+        db.commit()
+        return redirect(url_for("admin_applications"))
+    finally:
+        db.close()
+
+@app.route("/create_test_data")
+def create_test_data():
+    db = get_db()
+    try:
+        if not db.query(Course).first():
+            db.add_all([
+                Course(name="Python"),
+                Course(name="Flask"),
+                Course(name="SQLAlchemy"),
+            ])
+            db.commit()
+
+        if not db.query(User).filter_by(username="user1").first():
+            user = User(username="user1", password="123", role="user")
+            db.add(user)
+            db.commit()
+
+            course = db.query(Course).first()
+            db.add(Application(
+                user_id=user.id,
+                course_id=course.id,
+                payment_form="Карта",
+                status="new",
+                comment="Тестовая заявка"
+            ))
+            db.commit()
+
+        return "Тестовые данные созданы"
+    finally:
+        db.close()
 
 if __name__ == "__main__":
     app.run(debug=True)
