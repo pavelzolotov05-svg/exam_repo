@@ -129,36 +129,5 @@ def admin_update_application(app_id):
     finally:
         db.close()
 
-@app.route("/create_test_data")
-def create_test_data():
-    db = get_db()
-    try:
-        if not db.query(Course).first():
-            db.add_all([
-                Course(name="Python"),
-                Course(name="Flask"),
-                Course(name="SQLAlchemy"),
-            ])
-            db.commit()
-
-        if not db.query(User).filter_by(username="user1").first():
-            user = User(username="user1", password="123", role="user")
-            db.add(user)
-            db.commit()
-
-            course = db.query(Course).first()
-            db.add(Application(
-                user_id=user.id,
-                course_id=course.id,
-                payment_form="Карта",
-                status="new",
-                comment="Тестовая заявка"
-            ))
-            db.commit()
-
-        return "Тестовые данные созданы"
-    finally:
-        db.close()
-
 if __name__ == "__main__":
     app.run(debug=True)
