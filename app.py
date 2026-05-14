@@ -46,7 +46,7 @@ def get_db():
 def ensure_admin():
     db = get_db()
     try:
-        admin = db.query(User).filter_by(username="Admin").first()
+        admin = db.query(User).filter_by(username="admin").first()
         if not admin:
             admin = User(username="admin", password="password123", role="admin")
             db.add(admin)
